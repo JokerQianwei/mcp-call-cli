@@ -15,6 +15,8 @@ import process from "node:process";
 const VERSION = "0.1.0";
 const PROTOCOL_VERSION = "2025-03-26";
 const DESCRIPTION_PREVIEW = 180;
+const MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const SAFE_TOKEN = /^[A-Za-z_][A-Za-z0-9_.\-/]*$/;
 
 class UsageError extends Error {}
@@ -77,7 +79,9 @@ function toonLines(value, indent = 0, key = null) {
 
   if (!Array.isArray(value)) {
     const entries = Object.entries(value);
-    if (entries.length === 0) return key === null ? [] : [`${prefix}${quote(key)}:`];
+    if (entries.length === 0) {
+      return [key === null ? `${prefix}{}` : `${prefix}${quote(key)}: {}`];
+    }
     const lines = key === null ? [] : [`${prefix}${quote(key)}:`];
     const childIndent = key === null ? indent : indent + 2;
     for (const [childKey, childValue] of entries) {
@@ -149,8 +153,12 @@ function toonLines(value, indent = 0, key = null) {
       }
       continue;
     }
-    lines.push(`${prefix}  -`);
-    lines.push(...toonLines(item, indent + 4));
+    if (entries.length === 0) {
+      lines.push(`${prefix}  - {}`);
+    } else {
+      lines.push(`${prefix}  -`);
+      lines.push(...toonLines(item, indent + 4));
+    }
   }
   return lines;
 }
@@ -164,7 +172,13 @@ function emit(value, asJson = false) {
   if (lines.length > 0) console.log(lines.join("\n"));
 }
 
-function emitError(message, help = null) {
+function emitError(message, help = null, asJson = false) {
+  if (asJson) {
+    const output = { error: message };
+    if (help) output.help = help;
+    emit(output, true);
+    return;
+  }
   console.log(`error: ${quote(message)}`);
   if (help) console.log(`help: ${quote(help)}`);
 }
@@ -269,24 +283,45 @@ class Client {
   async post(payload, notification = false) {
     const headers = { ...this.headers };
     if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
-    let response;
-    try {
-      response = await fetch(this.url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(this.timeout),
-      });
-    } catch (error) {
-      const detail = error.name === "TimeoutError" ? "request timed out" : error.message;
-      throw new CallError(`cannot reach MCP server: ${detail}`);
+    const body = JSON.stringify(payload);
+    let target = new URL(this.url);
+    let response = null;
+
+    // Redirects are handled explicitly so credentials and tool arguments can
+    // never cross an origin boundary through fetch's automatic redirect mode.
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+      try {
+        response = await fetch(target, {
+          method: "POST",
+          headers,
+          body,
+          redirect: "manual",
+          signal: AbortSignal.timeout(this.timeout),
+        });
+      } catch (error) {
+        const detail = error.name === "TimeoutError" ? "request timed out" : error.message;
+        throw new CallError(`cannot reach MCP server: ${detail}`);
+      }
+      if (!REDIRECT_STATUSES.has(response.status)) break;
+
+      const location = response.headers.get("location");
+      if (!location) throw new CallError("MCP server returned a redirect without a location");
+      const redirected = new URL(location, target);
+      if (redirected.origin !== target.origin) {
+        throw new CallError("MCP server attempted a cross-origin redirect");
+      }
+      if (redirects === MAX_REDIRECTS) {
+        throw new CallError(`MCP server exceeded ${MAX_REDIRECTS} redirects`);
+      }
+      target = redirected;
     }
+    if (response === null) throw new CallError("MCP server returned no response");
     if (!response.ok) throw new CallError(`MCP server returned HTTP ${response.status}`);
     const sessionId = response.headers.get("mcp-session-id");
     if (sessionId) this.sessionId = sessionId;
-    const body = await response.text();
-    if (notification || !body) return {};
-    return decodeResponse(body);
+    const responseBody = await response.text();
+    if (notification || !responseBody) return {};
+    return decodeResponse(responseBody);
   }
 
   async request(method, params) {
@@ -452,8 +487,28 @@ function parseToolArguments(raw) {
 }
 
 async function visibleTools(client) {
-  const result = await client.request("tools/list", {});
-  const tools = Array.isArray(result?.tools) ? result.tools : [];
+  const tools = [];
+  const cursors = new Set();
+  let cursor = null;
+
+  // MCP tool discovery is cursor-paginated. Consume every page so schema
+  // lookup and health-check counts describe the complete server surface.
+  do {
+    const params = cursor === null ? {} : { cursor };
+    const result = await client.request("tools/list", params);
+    if (Array.isArray(result?.tools)) tools.push(...result.tools);
+    cursor =
+      typeof result?.nextCursor === "string" && result.nextCursor
+        ? result.nextCursor
+        : null;
+    if (cursor !== null) {
+      if (cursors.has(cursor)) {
+        throw new CallError("MCP server repeated a tools/list cursor");
+      }
+      cursors.add(cursor);
+    }
+  } while (cursor !== null);
+
   return tools.filter(
     (tool) =>
       tool &&
@@ -626,19 +681,21 @@ async function run(argv) {
 }
 
 // Keep expected failures structured and reserve stderr for future diagnostics.
+const jsonErrors = process.argv.slice(2).includes("--json");
+
 try {
   process.exitCode = await run(process.argv.slice(2));
 } catch (error) {
   if (error instanceof ExitSignal) {
     process.exitCode = error.code;
   } else if (error instanceof UsageError) {
-    emitError(error.message, "run mcp-call --help");
+    emitError(error.message, "run mcp-call --help", jsonErrors);
     process.exitCode = 2;
   } else if (error instanceof CallError) {
-    emitError(error.message);
+    emitError(error.message, null, jsonErrors);
     process.exitCode = 1;
   } else {
-    emitError("unexpected internal error");
+    emitError("unexpected internal error", null, jsonErrors);
     process.exitCode = 1;
   }
 }

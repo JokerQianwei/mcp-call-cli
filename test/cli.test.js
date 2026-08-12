@@ -3,15 +3,18 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { after, before, test } from "node:test";
 
-const root = path.resolve(import.meta.dirname, "..");
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "bin", "mcp-call.js");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-call-test-"));
 const configPath = path.join(temporary, "mcp.json");
 let server;
+let redirectTarget;
 let url;
+let redirectTargetHits = 0;
 
 function execute(args, input = "") {
   return new Promise((resolve) => {
@@ -28,12 +31,35 @@ function execute(args, input = "") {
 }
 
 before(async () => {
+  redirectTarget = http.createServer((_request, response) => {
+    redirectTargetHits++;
+    response.writeHead(500).end();
+  });
+  await new Promise((resolve) =>
+    redirectTarget.listen(0, "127.0.0.1", resolve),
+  );
+
   // A minimal in-process MCP server keeps protocol tests deterministic and
   // prevents the public test suite from depending on private infrastructure.
   server = http.createServer(async (request, response) => {
+    if (request.url === "/same-origin-redirect") {
+      response.writeHead(307, { Location: "/mcp" }).end();
+      return;
+    }
     let body = "";
     for await (const chunk of request) body += chunk;
     const payload = JSON.parse(body);
+    if (
+      request.url === "/cross-origin-redirect" &&
+      payload.method === "tools/call"
+    ) {
+      response
+        .writeHead(307, {
+          Location: `http://127.0.0.1:${redirectTarget.address().port}/mcp`,
+        })
+        .end();
+      return;
+    }
     response.setHeader("Content-Type", "application/json");
     response.setHeader("Mcp-Session-Id", "test-session");
 
@@ -52,33 +78,52 @@ before(async () => {
       return;
     }
     if (payload.method === "tools/list") {
+      const secondPage = payload.params.cursor === "page-2";
       response.end(
         JSON.stringify({
           jsonrpc: "2.0",
           id: payload.id,
           result: {
-            tools: [
-              {
-                name: "echo",
-                description: "Return the provided value",
-                inputSchema: {
-                  type: "object",
-                  properties: { value: { type: "string" } },
-                  required: ["value"],
-                },
-              },
-              {
-                name: "hidden",
-                description: "Excluded",
-                inputSchema: { type: "object" },
-              },
-            ],
+            tools: secondPage
+              ? [
+                  {
+                    name: "second",
+                    description: "A tool from the second page",
+                    inputSchema: { type: "object" },
+                  },
+                  {
+                    name: "empty",
+                    description: "Return an empty object",
+                    inputSchema: { type: "object" },
+                  },
+                ]
+              : [
+                  {
+                    name: "echo",
+                    description: "Return the provided value",
+                    inputSchema: {
+                      type: "object",
+                      properties: { value: { type: "string" } },
+                      required: ["value"],
+                    },
+                  },
+                  {
+                    name: "hidden",
+                    description: "Excluded",
+                    inputSchema: { type: "object" },
+                  },
+                ],
+            ...(secondPage ? {} : { nextCursor: "page-2" }),
           },
         }),
       );
       return;
     }
     if (payload.method === "tools/call") {
+      const result =
+        payload.params.name === "empty"
+          ? {}
+          : { echoed: payload.params.arguments.value };
       response.end(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -87,7 +132,7 @@ before(async () => {
             content: [
               {
                 type: "text",
-                text: JSON.stringify({ echoed: payload.params.arguments.value }),
+                text: JSON.stringify(result),
               },
             ],
           },
@@ -103,6 +148,11 @@ before(async () => {
       mcpServers: {
         example: { url, excludeTools: ["hidden"] },
         disabled: { url, disabled: true },
+        same_redirect: { url: `${url}/../same-origin-redirect` },
+        cross_redirect: {
+          url: `${url}/../cross-origin-redirect`,
+          headers: { Authorization: "test-secret" },
+        },
       },
     }),
   );
@@ -110,13 +160,14 @@ before(async () => {
 
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
+  await new Promise((resolve) => redirectTarget.close(resolve));
   fs.rmSync(temporary, { recursive: true, force: true });
 });
 
 test("shows configured servers without network access", async () => {
   const result = await execute([]);
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /servers\[2\]\{name,disabled\}/);
+  assert.match(result.stdout, /servers\[4\]\{name,disabled\}/);
   assert.match(result.stdout, /example,false/);
   assert.equal(result.stderr, "");
 });
@@ -125,6 +176,7 @@ test("lists only visible tools", async () => {
   const result = await execute(["example", "tools"]);
   assert.equal(result.code, 0);
   assert.match(result.stdout, /echo/);
+  assert.match(result.stdout, /second/);
   assert.doesNotMatch(result.stdout, /hidden/);
 });
 
@@ -142,6 +194,32 @@ test("calls a tool with stdin JSON arguments", async () => {
   assert.deepEqual(JSON.parse(result.stdout), { echoed: "ok" });
 });
 
+test("renders an empty object instead of empty output", async () => {
+  const result = await execute(["example", "empty"]);
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, "{}\n");
+});
+
+test("follows same-origin redirects", async () => {
+  const result = await execute(["same_redirect", "tools", "--json"]);
+  assert.equal(result.code, 0);
+  assert.equal(JSON.parse(result.stdout).tools.length, 4);
+});
+
+test("rejects cross-origin redirects before forwarding credentials", async () => {
+  const result = await execute([
+    "cross_redirect",
+    "echo",
+    '{"value":"private-argument"}',
+    "--json",
+  ]);
+  assert.equal(result.code, 1);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    error: "MCP server attempted a cross-origin redirect",
+  });
+  assert.equal(redirectTargetHits, 0);
+});
+
 test("rejects unknown flags before network access", async () => {
   const result = await execute(["example", "tools", "--schema"]);
   assert.equal(result.code, 2);
@@ -149,10 +227,21 @@ test("rejects unknown flags before network access", async () => {
   assert.match(result.stdout, /run mcp-call --help/);
 });
 
+test("emits structured JSON errors with --json", async () => {
+  const result = await execute(["missing", "tools", "--json"]);
+  assert.equal(result.code, 2);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    error:
+      "unknown server missing; configured servers: example, disabled, same_redirect, cross_redirect",
+    help: "run mcp-call --help",
+  });
+});
+
 test("check reports enabled servers only", async () => {
   const result = await execute(["check", "--json"]);
   assert.equal(result.code, 0);
   const output = JSON.parse(result.stdout);
-  assert.equal(output.servers.length, 1);
-  assert.deepEqual(output.summary, { passed: 1, failed: 0 });
+  assert.equal(output.servers.length, 3);
+  assert.deepEqual(output.summary, { passed: 3, failed: 0 });
+  assert.equal(output.servers[0].tools, 3);
 });
