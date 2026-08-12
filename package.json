@@ -1,0 +1,27 @@
+{
+  "name": "cfw-mcp-call",
+  "version": "0.1.0",
+  "description": "Token-efficient CLI for discovering and calling Streamable HTTP MCP tools",
+  "type": "module",
+  "bin": {
+    "mcp-call": "bin/mcp-call.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check": "npm test && npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cli",
+    "agent"
+  ],
+  "license": "MIT"
+}
