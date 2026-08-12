@@ -1,4 +1,4 @@
-# cfw-mcp-call
+# mcp-call-cli
 
 A lightweight Streamable HTTP MCP CLI for agents. It discovers tool definitions
 on demand and emits compact TOON output by default.
@@ -6,7 +6,7 @@ on demand and emits compact TOON output by default.
 ## Install
 
 ```bash
-npm install -g cfw-mcp-call
+npm install -g mcp-call-cli
 ```
 
 Requires Node.js 18 or newer.

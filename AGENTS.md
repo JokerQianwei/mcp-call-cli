@@ -1,4 +1,4 @@
-# cfw-mcp-call
+# mcp-call-cli
 
 ## Scope
 

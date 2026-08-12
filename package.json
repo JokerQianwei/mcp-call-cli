@@ -1,5 +1,5 @@
 {
-  "name": "cfw-mcp-call",
+  "name": "mcp-call-cli",
   "version": "0.1.0",
   "description": "Token-efficient CLI for discovering and calling Streamable HTTP MCP tools",
   "type": "module",
@@ -25,11 +25,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JokerQianwei/cfw-mcp-call.git"
+    "url": "git+https://github.com/JokerQianwei/mcp-call-cli.git"
   },
-  "homepage": "https://github.com/JokerQianwei/cfw-mcp-call#readme",
+  "homepage": "https://github.com/JokerQianwei/mcp-call-cli#readme",
   "bugs": {
-    "url": "https://github.com/JokerQianwei/cfw-mcp-call/issues"
+    "url": "https://github.com/JokerQianwei/mcp-call-cli/issues"
   },
   "license": "MIT"
 }
