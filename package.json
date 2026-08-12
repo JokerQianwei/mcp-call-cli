@@ -23,5 +23,13 @@
     "cli",
     "agent"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JokerQianwei/cfw-mcp-call.git"
+  },
+  "homepage": "https://github.com/JokerQianwei/cfw-mcp-call#readme",
+  "bugs": {
+    "url": "https://github.com/JokerQianwei/cfw-mcp-call/issues"
+  },
   "license": "MIT"
 }
