@@ -80,7 +80,7 @@ function toonLines(value, indent = 0, key = null) {
   if (!Array.isArray(value)) {
     const entries = Object.entries(value);
     if (entries.length === 0) {
-      return [key === null ? `${prefix}{}` : `${prefix}${quote(key)}: {}`];
+      return [key === null ? `${prefix}{}` : `${prefix}${quote(key)}:`];
     }
     const lines = key === null ? [] : [`${prefix}${quote(key)}:`];
     const childIndent = key === null ? indent : indent + 2;
@@ -153,12 +153,8 @@ function toonLines(value, indent = 0, key = null) {
       }
       continue;
     }
-    if (entries.length === 0) {
-      lines.push(`${prefix}  - {}`);
-    } else {
-      lines.push(`${prefix}  -`);
-      lines.push(...toonLines(item, indent + 4));
-    }
+    lines.push(`${prefix}  -`);
+    lines.push(...toonLines(item, indent + 4));
   }
   return lines;
 }
@@ -305,6 +301,7 @@ class Client {
       if (!REDIRECT_STATUSES.has(response.status)) break;
 
       const location = response.headers.get("location");
+      await response.body?.cancel();
       if (!location) throw new CallError("MCP server returned a redirect without a location");
       const redirected = new URL(location, target);
       if (redirected.origin !== target.origin) {
@@ -498,7 +495,8 @@ async function visibleTools(client) {
     const result = await client.request("tools/list", params);
     if (Array.isArray(result?.tools)) tools.push(...result.tools);
     cursor =
-      typeof result?.nextCursor === "string" && result.nextCursor
+      Object.hasOwn(result ?? {}, "nextCursor") &&
+      typeof result.nextCursor === "string"
         ? result.nextCursor
         : null;
     if (cursor !== null) {

@@ -15,6 +15,7 @@ let server;
 let redirectTarget;
 let url;
 let redirectTargetHits = 0;
+let repeatedEmptyCursor = false;
 
 function execute(args, input = "") {
   return new Promise((resolve) => {
@@ -57,7 +58,7 @@ before(async () => {
         .writeHead(307, {
           Location: `http://127.0.0.1:${redirectTarget.address().port}/mcp`,
         })
-        .end();
+        .flushHeaders();
       return;
     }
     response.setHeader("Content-Type", "application/json");
@@ -78,7 +79,12 @@ before(async () => {
       return;
     }
     if (payload.method === "tools/list") {
-      const secondPage = payload.params.cursor === "page-2";
+      const secondPage =
+        payload.params.cursor === "page-2" || payload.params.cursor === "";
+      const emptyCursorPagination = request.url === "/empty-cursor";
+      if (emptyCursorPagination && payload.params.cursor === "") {
+        repeatedEmptyCursor = true;
+      }
       response.end(
         JSON.stringify({
           jsonrpc: "2.0",
@@ -94,6 +100,11 @@ before(async () => {
                   {
                     name: "empty",
                     description: "Return an empty object",
+                    inputSchema: { type: "object" },
+                  },
+                  {
+                    name: "nested_empty",
+                    description: "Return nested empty objects",
                     inputSchema: { type: "object" },
                   },
                 ]
@@ -113,7 +124,9 @@ before(async () => {
                     inputSchema: { type: "object" },
                   },
                 ],
-            ...(secondPage ? {} : { nextCursor: "page-2" }),
+            ...(secondPage
+              ? {}
+              : { nextCursor: emptyCursorPagination ? "" : "page-2" }),
           },
         }),
       );
@@ -123,6 +136,8 @@ before(async () => {
       const result =
         payload.params.name === "empty"
           ? {}
+          : payload.params.name === "nested_empty"
+            ? { metadata: {}, values: [{}] }
           : { echoed: payload.params.arguments.value };
       response.end(
         JSON.stringify({
@@ -153,6 +168,7 @@ before(async () => {
           url: `${url}/../cross-origin-redirect`,
           headers: { Authorization: "test-secret" },
         },
+        empty_cursor: { url: `${url}/../empty-cursor` },
       },
     }),
   );
@@ -167,7 +183,7 @@ after(async () => {
 test("shows configured servers without network access", async () => {
   const result = await execute([]);
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /servers\[4\]\{name,disabled\}/);
+  assert.match(result.stdout, /servers\[5\]\{name,disabled\}/);
   assert.match(result.stdout, /example,false/);
   assert.equal(result.stderr, "");
 });
@@ -200,10 +216,25 @@ test("renders an empty object instead of empty output", async () => {
   assert.equal(result.stdout, "{}\n");
 });
 
+test("preserves nested empty-object TOON semantics", async () => {
+  const result = await execute(["example", "nested_empty"]);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /metadata:\n/);
+  assert.doesNotMatch(result.stdout, /metadata: \{\}/);
+  assert.match(result.stdout, /values\[1\]:\n\s+-\n/);
+});
+
+test("treats an empty tools/list cursor as opaque", async () => {
+  const result = await execute(["empty_cursor", "tools", "--json"]);
+  assert.equal(result.code, 0);
+  assert.equal(JSON.parse(result.stdout).tools.length, 5);
+  assert.equal(repeatedEmptyCursor, true);
+});
+
 test("follows same-origin redirects", async () => {
   const result = await execute(["same_redirect", "tools", "--json"]);
   assert.equal(result.code, 0);
-  assert.equal(JSON.parse(result.stdout).tools.length, 4);
+  assert.equal(JSON.parse(result.stdout).tools.length, 5);
 });
 
 test("rejects cross-origin redirects before forwarding credentials", async () => {
@@ -232,7 +263,7 @@ test("emits structured JSON errors with --json", async () => {
   assert.equal(result.code, 2);
   assert.deepEqual(JSON.parse(result.stdout), {
     error:
-      "unknown server missing; configured servers: example, disabled, same_redirect, cross_redirect",
+      "unknown server missing; configured servers: example, disabled, same_redirect, cross_redirect, empty_cursor",
     help: "run mcp-call --help",
   });
 });
@@ -241,7 +272,7 @@ test("check reports enabled servers only", async () => {
   const result = await execute(["check", "--json"]);
   assert.equal(result.code, 0);
   const output = JSON.parse(result.stdout);
-  assert.equal(output.servers.length, 3);
-  assert.deepEqual(output.summary, { passed: 3, failed: 0 });
-  assert.equal(output.servers[0].tools, 3);
+  assert.equal(output.servers.length, 4);
+  assert.deepEqual(output.summary, { passed: 4, failed: 0 });
+  assert.equal(output.servers[0].tools, 4);
 });
