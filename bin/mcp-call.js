@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 
+/**
+ * Discover and call tools exposed by configured Streamable HTTP MCP servers.
+ *
+ * The CLI intentionally owns no domain behavior. It loads one local server
+ * map, opens a short-lived MCP session, and renders the result for an agent.
+ */
+
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +20,10 @@ const SAFE_TOKEN = /^[A-Za-z_][A-Za-z0-9_.\-/]*$/;
 class UsageError extends Error {}
 class CallError extends Error {}
 
+/**
+ * Follow the XDG config convention while retaining a stable default on
+ * platforms where XDG_CONFIG_HOME is not set.
+ */
 function defaultConfigPath() {
   if (process.env.MCP_CONFIG) {
     return expandHome(process.env.MCP_CONFIG);
@@ -52,6 +63,12 @@ function isScalar(value) {
   return value === null || (typeof value !== "object" && value !== undefined);
 }
 
+/**
+ * Encode JSON-compatible values as TOON.
+ *
+ * Uniform object arrays use TOON's tabular form. Other arrays fall back to the
+ * list form so nested and mixed values remain unambiguous.
+ */
 function toonLines(value, indent = 0, key = null) {
   const prefix = " ".repeat(indent);
   const label = key === null ? "" : `${quote(key)}: `;
@@ -162,6 +179,10 @@ function parseTimeout(value) {
   return amount * 1000;
 }
 
+/**
+ * Accept the flat server map used by some MCP clients and the common
+ * { mcpServers: ... } wrapper without mutating either representation.
+ */
 function loadServers(configPath) {
   let config;
   try {
@@ -180,6 +201,10 @@ function loadServers(configPath) {
   return servers;
 }
 
+/**
+ * Decode either a plain JSON response or the last complete data event in an
+ * SSE response. MCP servers may use either response form for POST requests.
+ */
 function decodeResponse(text) {
   let payload = text;
   if (/^\s*(data:|event:|id:|retry:|:)/.test(text)) {
@@ -210,6 +235,13 @@ function decodeResponse(text) {
   }
 }
 
+/**
+ * A deliberately short-lived MCP client.
+ *
+ * Each command initializes a fresh session. The session ID returned by the
+ * server is forwarded on discovery and call requests, then discarded when the
+ * process exits.
+ */
 class Client {
   constructor(config, timeout) {
     const url = config.url ?? config.baseUrl;
@@ -283,6 +315,10 @@ class Client {
   }
 }
 
+/**
+ * Unwrap the common single text-content result. JSON text is parsed so the
+ * normal output encoder can preserve its structure.
+ */
 function simplifyResult(result) {
   if (!result || Array.isArray(result) || typeof result !== "object") return result;
   const content = result.content;
@@ -301,12 +337,14 @@ function simplifyResult(result) {
   return result;
 }
 
+/** Keep discovery output small while making truncation explicit to the agent. */
 function descriptionPreview(description, full) {
   const compact = String(description ?? "").split(/\s+/).filter(Boolean).join(" ");
   if (full || compact.length <= DESCRIPTION_PREVIEW) return compact;
   return `${compact.slice(0, DESCRIPTION_PREVIEW).trimEnd()}… (${compact.length} chars)`;
 }
 
+/** Render the no-argument home view without contacting any MCP server. */
 function home(servers, configPath, asJson) {
   const executable = fs.realpathSync(process.argv[1]).replace(os.homedir(), "~");
   emit(
@@ -348,6 +386,10 @@ examples:
   mcp-call example fetch '{"id":"123"}'`);
 }
 
+/**
+ * Parse global flags before any network request. Unknown input is rejected
+ * instead of being silently dropped from a potentially sensitive query.
+ */
 function parseArgs(argv) {
   let asJson = false;
   let full = false;
@@ -394,6 +436,7 @@ class ExitSignal extends Error {
   }
 }
 
+/** Read tool arguments from a literal JSON object or stdin when raw is "-". */
 function parseToolArguments(raw) {
   const source = raw === "-" ? fs.readFileSync(0, "utf8") : raw;
   let value;
@@ -419,6 +462,7 @@ async function visibleTools(client) {
   );
 }
 
+/** Probe enabled servers concurrently; one failure does not hide other results. */
 async function checkServers(servers, timeout, asJson) {
   const names = Object.entries(servers)
     .filter(([, config]) => !config?.disabled)
@@ -470,6 +514,10 @@ async function checkServers(servers, timeout, asJson) {
   return Object.keys(errors).length === 0;
 }
 
+/**
+ * Return compact names and descriptions by default, but always include the
+ * exact input schema when a single tool is requested.
+ */
 async function listTools(client, serverName, toolName, asJson, full) {
   const tools = await visibleTools(client);
   if (toolName !== null) {
@@ -524,6 +572,7 @@ async function callTool(client, toolName, argumentsValue, asJson) {
   emit(simplifyResult(result), asJson);
 }
 
+/** Map CLI grammar to one MCP session and one discovery or call operation. */
 async function run(argv) {
   const { asJson, full, timeout, configPath, positional } = parseArgs(argv);
   const servers = loadServers(configPath);
@@ -576,6 +625,7 @@ async function run(argv) {
   return 0;
 }
 
+// Keep expected failures structured and reserve stderr for future diagnostics.
 try {
   process.exitCode = await run(process.argv.slice(2));
 } catch (error) {

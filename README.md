@@ -1,18 +1,20 @@
 # cfw-mcp-call
 
-面向 Agent 的轻量 Streamable HTTP MCP CLI。工具定义按需加载，默认以紧凑的
-TOON 文本输出。
+A lightweight Streamable HTTP MCP CLI for agents. It discovers tool definitions
+on demand and emits compact TOON output by default.
 
-## 安装
+## Install
 
 ```bash
 npm install -g cfw-mcp-call
 ```
 
-## 配置
+Requires Node.js 18 or newer.
 
-默认读取 `~/.config/mcp-call/mcp.json`，也可通过 `MCP_CONFIG` 或
-`--config <path>` 指定：
+## Configure
+
+The default configuration path is `~/.config/mcp-call/mcp.json`. Override it
+with `MCP_CONFIG` or `--config <path>`.
 
 ```json
 {
@@ -24,7 +26,9 @@ npm install -g cfw-mcp-call
 }
 ```
 
-## 使用
+Both a top-level server map and a map nested under `mcpServers` are accepted.
+
+## Use
 
 ```bash
 mcp-call
@@ -34,4 +38,7 @@ mcp-call example tools tool_name
 mcp-call example tool_name '{"key":"value"}'
 ```
 
-使用 `--json` 输出紧凑 JSON，使用 `--full` 查看完整工具说明和 Schema。
+Use `--json` for compact JSON. Use `--full` to show complete tool descriptions
+and schemas.
+
+Run `mcp-call --help` for the full command reference.

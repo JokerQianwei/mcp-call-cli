@@ -2,9 +2,9 @@
 
 ## Scope
 
-- 公开发布的通用 Streamable HTTP MCP CLI，不包含任何 CFW 领域逻辑或配置。
-- 禁止提交 MCP 地址、认证 Header、Token、内部域名、IP 或用户配置。
-- CFW 的 `mcp.json` 与 Skill 归私有 `cfw-plugins` 仓库维护。
+- This is a public, general-purpose Streamable HTTP MCP CLI.
+- Keep all source code, comments, documentation, tests, and commit messages in English.
+- Never commit private MCP endpoints, authentication headers, tokens, internal domains, IP addresses, or user configuration.
 
 ## Commands
 
@@ -14,4 +14,4 @@ npm run check
 npm pack --dry-run
 ```
 
-发布前检查 tarball 文件列表，并扫描内部地址与凭据；真实执行 `npm publish` 前需人工确认。
+Before publishing, inspect the tarball file list and scan it for private endpoints and credentials. Require explicit human confirmation before running `npm publish`.

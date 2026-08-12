@@ -28,6 +28,8 @@ function execute(args, input = "") {
 }
 
 before(async () => {
+  // A minimal in-process MCP server keeps protocol tests deterministic and
+  // prevents the public test suite from depending on private infrastructure.
   server = http.createServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) body += chunk;
