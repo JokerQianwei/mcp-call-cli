@@ -11,6 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "bin", "mcp-call.js");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-call-test-"));
 const configPath = path.join(temporary, "mcp.json");
+const managedConfigPath = path.join(temporary, "managed.json");
 let server;
 let redirectTarget;
 let url;
@@ -28,6 +29,21 @@ function execute(args, input = "") {
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.on("close", (code) => resolve({ code, stdout, stderr }));
     child.stdin.end(input);
+  });
+}
+
+function executeConfig(args) {
+  return new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [cli, "config", ...args, "--config", managedConfigPath],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
 
@@ -266,6 +282,72 @@ test("emits structured JSON errors with --json", async () => {
       "unknown server missing; configured servers: example, disabled, same_redirect, cross_redirect, empty_cursor",
     help: "run mcp-call --help",
   });
+});
+
+test("adds and lists servers without printing secrets", async () => {
+  const added = await executeConfig([
+    "add",
+    "managed",
+    "--url",
+    url,
+    "--header",
+    "Authorization=private-value",
+    "--timeout",
+    "60",
+  ]);
+  assert.equal(added.code, 0);
+  assert.match(added.stdout, /action: added/);
+  assert.doesNotMatch(added.stdout, /private-value/);
+
+  const listed = await executeConfig(["list"]);
+  assert.equal(listed.code, 0);
+  assert.match(listed.stdout, /managed/);
+  assert.doesNotMatch(listed.stdout, /Authorization|private-value/);
+
+  const persisted = JSON.parse(fs.readFileSync(managedConfigPath, "utf8"));
+  assert.equal(
+    persisted.mcpServers.managed.headers.Authorization,
+    "private-value",
+  );
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(managedConfigPath).mode & 0o777, 0o600);
+  }
+});
+
+test("imports servers atomically while preserving existing entries", async () => {
+  const importPath = path.join(temporary, "import.json");
+  fs.writeFileSync(
+    importPath,
+    JSON.stringify({
+      imported: { url, excludeTools: ["hidden"] },
+    }),
+  );
+  const result = await executeConfig(["import", importPath]);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /action: imported/);
+
+  const persisted = JSON.parse(fs.readFileSync(managedConfigPath, "utf8"));
+  assert.ok(persisted.mcpServers.managed);
+  assert.ok(persisted.mcpServers.imported);
+});
+
+test("rejects an invalid import without changing the target", async () => {
+  const invalidPath = path.join(temporary, "invalid-import.json");
+  fs.writeFileSync(invalidPath, JSON.stringify({ invalid: { command: "echo" } }));
+  const before = fs.readFileSync(managedConfigPath, "utf8");
+  const result = await executeConfig(["import", invalidPath]);
+  assert.equal(result.code, 2);
+  assert.equal(fs.readFileSync(managedConfigPath, "utf8"), before);
+});
+
+test("removes servers idempotently", async () => {
+  const removed = await executeConfig(["remove", "imported"]);
+  assert.equal(removed.code, 0);
+  assert.match(removed.stdout, /action: removed/);
+
+  const absent = await executeConfig(["remove", "imported"]);
+  assert.equal(absent.code, 0);
+  assert.match(absent.stdout, /action: absent/);
 });
 
 test("check reports enabled servers only", async () => {

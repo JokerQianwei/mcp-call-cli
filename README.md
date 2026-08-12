@@ -28,6 +28,15 @@ with `MCP_CONFIG` or `--config <path>`.
 
 Both a top-level server map and a map nested under `mcpServers` are accepted.
 
+Manage the local configuration without exposing endpoint or header values:
+
+```bash
+mcp-call config list
+mcp-call config add example --url https://example.com/mcp
+mcp-call config import ./mcp.json
+mcp-call config remove example
+```
+
 ## Use
 
 ```bash

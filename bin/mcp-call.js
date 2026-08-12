@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const PROTOCOL_VERSION = "2025-03-26";
 const DESCRIPTION_PREVIEW = 180;
 const MAX_REDIRECTS = 5;
@@ -209,6 +209,93 @@ function loadServers(configPath) {
     throw new CallError(`invalid MCP config: ${configPath}`);
   }
   return servers;
+}
+
+/** Validate the persisted subset understood by this HTTP-only client. */
+function validateServer(name, server) {
+  if (!server || Array.isArray(server) || typeof server !== "object") {
+    throw new UsageError(`invalid config for MCP server ${name}`);
+  }
+  const url = server.url ?? server.baseUrl;
+  if (typeof url !== "string" || !url) {
+    throw new UsageError(`MCP server ${name} has no URL`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new UsageError(`MCP server ${name} has an invalid URL`);
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new UsageError(`MCP server ${name} URL must use http or https`);
+  }
+  if (
+    server.headers !== undefined &&
+    (!server.headers ||
+      Array.isArray(server.headers) ||
+      typeof server.headers !== "object" ||
+      Object.values(server.headers).some((value) => typeof value !== "string"))
+  ) {
+    throw new UsageError(`MCP server ${name} headers must contain string values`);
+  }
+  if (
+    server.excludeTools !== undefined &&
+    (!Array.isArray(server.excludeTools) ||
+      server.excludeTools.some((value) => typeof value !== "string"))
+  ) {
+    throw new UsageError(`MCP server ${name} excludeTools must be a string array`);
+  }
+  if (server.disabled !== undefined && typeof server.disabled !== "boolean") {
+    throw new UsageError(`MCP server ${name} disabled must be a boolean`);
+  }
+  if (
+    server.timeout !== undefined &&
+    typeof server.timeout !== "string" &&
+    typeof server.timeout !== "number"
+  ) {
+    throw new UsageError(`MCP server ${name} timeout must be a string or number`);
+  }
+}
+
+function validateServers(servers) {
+  for (const [name, server] of Object.entries(servers)) {
+    validateServer(name, server);
+  }
+}
+
+/**
+ * Persist a complete server map atomically. The temporary file is private
+ * before content is written, so credentials are never exposed with broad
+ * default permissions.
+ */
+function saveServers(configPath, servers) {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const temporary = `${configPath}.tmp-${process.pid}`;
+  const descriptor = fs.openSync(
+    temporary,
+    fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+    0o600,
+  );
+  try {
+    fs.writeFileSync(
+      descriptor,
+      `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`,
+    );
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  try {
+    fs.renameSync(temporary, configPath);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
+  fs.chmodSync(configPath, 0o600);
+}
+
+function loadServersOrEmpty(configPath) {
+  if (!fs.existsSync(configPath)) return {};
+  return loadServers(configPath);
 }
 
 /**
@@ -412,10 +499,173 @@ flags:
   --help              show this help
 
 examples:
+  mcp-call config add example --url https://example.com/mcp
+  mcp-call config import ./mcp.json
   mcp-call example tools
   mcp-call example tools fetch
   mcp-call example tools fetch --full
   mcp-call example fetch '{"id":"123"}'`);
+}
+
+function configHelpOutput() {
+  console.log(`usage: mcp-call config <list | add | import | remove> [options]
+
+Manage the local MCP server map without printing endpoints or credentials.
+
+commands:
+  list
+  add <name> --url <url> [--header KEY=VALUE] [--timeout <value>]
+             [--exclude-tool <name>] [--disabled]
+  import <path>
+  remove <name>
+
+flags:
+  --config <path>       override the target config file
+  --header KEY=VALUE    attach an HTTP header (repeatable)
+  --exclude-tool <name> hide a tool from discovery (repeatable)
+  --timeout <value>     server timeout, for example 60 or 500ms
+  --disabled            add the server in a disabled state
+  --help                show this help
+
+examples:
+  mcp-call config list
+  mcp-call config add example --url https://example.com/mcp
+  mcp-call config import ./mcp.json
+  mcp-call config remove example`);
+}
+
+function parseHeader(raw) {
+  const separator = raw.indexOf("=");
+  if (separator <= 0) {
+    throw new UsageError("--header must use KEY=VALUE syntax");
+  }
+  return [raw.slice(0, separator), raw.slice(separator + 1)];
+}
+
+function parseConfigArgs(argv) {
+  let configPath = defaultConfigPath();
+  const positional = [];
+  const options = {
+    url: null,
+    headers: {},
+    timeout: null,
+    excludeTools: [],
+    disabled: false,
+  };
+  for (let index = 1; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === "--help") {
+      configHelpOutput();
+      throw new ExitSignal(0);
+    }
+    if (["--config", "--url", "--header", "--timeout", "--exclude-tool"].includes(arg)) {
+      index++;
+      if (index === argv.length) throw new UsageError(`${arg} requires a value`);
+      const value = argv[index];
+      if (arg === "--config") configPath = expandHome(value);
+      else if (arg === "--url") options.url = value;
+      else if (arg === "--timeout") options.timeout = value;
+      else if (arg === "--exclude-tool") options.excludeTools.push(value);
+      else {
+        const [name, headerValue] = parseHeader(value);
+        options.headers[name] = headerValue;
+      }
+    } else if (arg === "--disabled") {
+      options.disabled = true;
+    } else if (arg.startsWith("--")) {
+      throw new UsageError(`unknown config flag ${arg}; run mcp-call config --help`);
+    } else {
+      positional.push(arg);
+    }
+  }
+  return { configPath, positional, options };
+}
+
+function configResult(action, names) {
+  emit({
+    action,
+    count: names.length,
+    servers: names,
+  });
+}
+
+function hasAddOptions(options) {
+  return (
+    options.url !== null ||
+    Object.keys(options.headers).length > 0 ||
+    options.timeout !== null ||
+    options.excludeTools.length > 0 ||
+    options.disabled
+  );
+}
+
+function runConfig(argv) {
+  const { configPath, positional, options } = parseConfigArgs(argv);
+  const [command, operand, ...extra] = positional;
+  if (!command) throw new UsageError("config requires a command");
+  if (extra.length > 0) throw new UsageError("too many config arguments");
+
+  if (command === "list") {
+    if (operand !== undefined) throw new UsageError("config list accepts no arguments");
+    if (hasAddOptions(options)) {
+      throw new UsageError("config list does not accept server options");
+    }
+    const servers = loadServersOrEmpty(configPath);
+    configResult("list", Object.keys(servers));
+    return 0;
+  }
+
+  if (command === "add") {
+    if (!operand) throw new UsageError("config add requires a server name");
+    if (!options.url) throw new UsageError("config add requires --url");
+    const server = { url: options.url };
+    if (Object.keys(options.headers).length > 0) server.headers = options.headers;
+    if (options.timeout !== null) server.timeout = options.timeout;
+    if (options.excludeTools.length > 0) server.excludeTools = options.excludeTools;
+    if (options.disabled) server.disabled = true;
+    validateServer(operand, server);
+    const servers = loadServersOrEmpty(configPath);
+    const action = operand in servers ? "updated" : "added";
+    const updated = { ...servers, [operand]: server };
+    validateServers(updated);
+    saveServers(configPath, updated);
+    configResult(action, [operand]);
+    return 0;
+  }
+
+  if (command === "import") {
+    if (!operand) throw new UsageError("config import requires a path");
+    if (hasAddOptions(options)) {
+      throw new UsageError("config import does not accept server options");
+    }
+    const imported = loadServers(expandHome(operand));
+    validateServers(imported);
+    const servers = loadServersOrEmpty(configPath);
+    const updated = { ...servers, ...imported };
+    validateServers(updated);
+    saveServers(configPath, updated);
+    configResult("imported", Object.keys(imported));
+    return 0;
+  }
+
+  if (command === "remove") {
+    if (!operand) throw new UsageError("config remove requires a server name");
+    if (hasAddOptions(options)) {
+      throw new UsageError("config remove does not accept server options");
+    }
+    const servers = loadServersOrEmpty(configPath);
+    if (!(operand in servers)) {
+      configResult("absent", [operand]);
+      return 0;
+    }
+    delete servers[operand];
+    validateServers(servers);
+    saveServers(configPath, servers);
+    configResult("removed", [operand]);
+    return 0;
+  }
+
+  throw new UsageError(`unknown config command ${command}`);
 }
 
 /**
@@ -627,6 +877,7 @@ async function callTool(client, toolName, argumentsValue, asJson) {
 
 /** Map CLI grammar to one MCP session and one discovery or call operation. */
 async function run(argv) {
+  if (argv[0] === "config") return runConfig(argv);
   const { asJson, full, timeout, configPath, positional } = parseArgs(argv);
   const servers = loadServers(configPath);
   if (positional.length === 0) {
