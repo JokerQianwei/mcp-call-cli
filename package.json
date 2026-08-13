@@ -1,6 +1,6 @@
 {
   "name": "mcp-call-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Token-efficient CLI for discovering and calling Streamable HTTP MCP tools",
   "type": "module",
   "bin": {

@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const PROTOCOL_VERSION = "2025-03-26";
 const DESCRIPTION_PREVIEW = 180;
 const MAX_REDIRECTS = 5;
