@@ -17,6 +17,8 @@ let redirectTarget;
 let url;
 let redirectTargetHits = 0;
 let repeatedEmptyCursor = false;
+let initializeFailuresRemaining = 2;
+let retryToolCalls = 0;
 
 function execute(args, input = "") {
   return new Promise((resolve) => {
@@ -80,6 +82,15 @@ before(async () => {
     response.setHeader("Content-Type", "application/json");
     response.setHeader("Mcp-Session-Id", "test-session");
 
+    if (
+      request.url === "/retry-initialize" &&
+      payload.method === "initialize" &&
+      initializeFailuresRemaining > 0
+    ) {
+      initializeFailuresRemaining--;
+      response.writeHead(500).end();
+      return;
+    }
     if (payload.method === "notifications/initialized") {
       response.writeHead(202).end();
       return;
@@ -149,6 +160,7 @@ before(async () => {
       return;
     }
     if (payload.method === "tools/call") {
+      if (request.url === "/retry-initialize") retryToolCalls++;
       const result =
         payload.params.name === "empty"
           ? {}
@@ -185,6 +197,7 @@ before(async () => {
           headers: { Authorization: "test-secret" },
         },
         empty_cursor: { url: `${url}/../empty-cursor` },
+        retry_initialize: { url: `${url}/../retry-initialize` },
       },
     }),
   );
@@ -199,7 +212,7 @@ after(async () => {
 test("shows configured servers without network access", async () => {
   const result = await execute([]);
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /servers\[5\]\{name,disabled\}/);
+  assert.match(result.stdout, /servers\[6\]\{name,disabled\}/);
   assert.match(result.stdout, /example,false/);
   assert.equal(result.stderr, "");
 });
@@ -224,6 +237,19 @@ test("calls a tool with stdin JSON arguments", async () => {
   const result = await execute(["example", "echo", "-", "--json"], '{"value":"ok"}');
   assert.equal(result.code, 0);
   assert.deepEqual(JSON.parse(result.stdout), { echoed: "ok" });
+});
+
+test("retries HTTP 500 only while initializing", async () => {
+  const result = await execute([
+    "retry_initialize",
+    "echo",
+    '{"value":"once"}',
+    "--json",
+  ]);
+  assert.equal(result.code, 0);
+  assert.deepEqual(JSON.parse(result.stdout), { echoed: "once" });
+  assert.equal(initializeFailuresRemaining, 0);
+  assert.equal(retryToolCalls, 1);
 });
 
 test("renders an empty object instead of empty output", async () => {
@@ -279,7 +305,7 @@ test("emits structured JSON errors with --json", async () => {
   assert.equal(result.code, 2);
   assert.deepEqual(JSON.parse(result.stdout), {
     error:
-      "unknown server missing; configured servers: example, disabled, same_redirect, cross_redirect, empty_cursor",
+      "unknown server missing; configured servers: example, disabled, same_redirect, cross_redirect, empty_cursor, retry_initialize",
     help: "run mcp-call --help",
   });
 });
@@ -354,7 +380,7 @@ test("check reports enabled servers only", async () => {
   const result = await execute(["check", "--json"]);
   assert.equal(result.code, 0);
   const output = JSON.parse(result.stdout);
-  assert.equal(output.servers.length, 4);
-  assert.deepEqual(output.summary, { passed: 4, failed: 0 });
+  assert.equal(output.servers.length, 5);
+  assert.deepEqual(output.summary, { passed: 5, failed: 0 });
   assert.equal(output.servers[0].tools, 4);
 });

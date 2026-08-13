@@ -16,6 +16,8 @@ const VERSION = "0.2.0";
 const PROTOCOL_VERSION = "2025-03-26";
 const DESCRIPTION_PREVIEW = 180;
 const MAX_REDIRECTS = 5;
+const MAX_INITIALIZE_ATTEMPTS = 20;
+const INITIALIZE_RETRY_DELAY_MS = 250;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const SAFE_TOKEN = /^[A-Za-z_][A-Za-z0-9_.\-/]*$/;
 
@@ -422,15 +424,29 @@ class Client {
   }
 
   async initialize() {
-    await this.request("initialize", {
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: {},
-      clientInfo: { name: "mcp-call", version: VERSION },
-    });
-    await this.post(
-      { jsonrpc: "2.0", method: "notifications/initialized" },
-      true,
-    );
+    for (let attempt = 0; attempt < MAX_INITIALIZE_ATTEMPTS; attempt++) {
+      try {
+        await this.request("initialize", {
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "mcp-call", version: VERSION },
+        });
+        await this.post(
+          { jsonrpc: "2.0", method: "notifications/initialized" },
+          true,
+        );
+        return;
+      } catch (error) {
+        const retryable =
+          error instanceof CallError &&
+          error.message === "MCP server returned HTTP 500";
+        if (!retryable || attempt === MAX_INITIALIZE_ATTEMPTS - 1) throw error;
+        this.sessionId = null;
+        await new Promise((resolve) =>
+          setTimeout(resolve, INITIALIZE_RETRY_DELAY_MS),
+        );
+      }
+    }
   }
 }
 
